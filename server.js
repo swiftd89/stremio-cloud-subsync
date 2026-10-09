@@ -7,14 +7,16 @@ const util = require("util");
 
 const execPromise = util.promisify(exec);
 
+const OPENSUBTITLES_API_KEY = process.env.OPENSUB_API_KEY || ""; // Set in Render Env Vars
+
 const manifest = {
     id: "org.myself.cloudautosubsync",
-    version: "1.0.0",
+    version: "1.1.0",
     name: "Auto-Corrected Subtitles 🎙️",
     description: "Cloud-based voice activity alignment for perfectly synced subtitles on LG TV.",
     resources: ["subtitles"],
     types: ["movie", "series"],
-    catalogs: [], // Required by Stremio SDK linter
+    catalogs: [],
     idPrefixes: ["tt"]
 };
 
@@ -45,9 +47,9 @@ async function alignSubtitles(streamUrl, rawSrtContent) {
 
         return correctedContent;
     } catch (err) {
-        console.error("[AutoSync Engine Error]:", err.message);
+        console.error("[AutoSync Engine Fallback]:", err.message);
         [tempSrt, tempAudio, syncedSrt].forEach(f => { if (fs.existsSync(f)) fs.unlinkSync(f); });
-        return rawSrtContent; // Fallback to raw subtitle if alignment fails
+        return rawSrtContent; // Return original track if audio alignment times out
     }
 }
 
@@ -59,22 +61,74 @@ function srtToVtt(srtText) {
     return vtt;
 }
 
+// Search OpenSubtitles API for English subtitles matching IMDB ID
+async function fetchOpenSubtitles(imdbId, season, episode) {
+    if (!OPENSUBTITLES_API_KEY) {
+        console.log("[Warning] Missing OPENSUB_API_KEY env variable.");
+        return null;
+    }
+
+    try {
+        const cleanImdb = imdbId.replace("tt", "");
+        let url = `https://api.opensubtitles.com/api/v1/subtitles?imdb_id=${cleanImdb}&languages=en`;
+        if (season && episode) {
+            url += `&season_number=${season}&episode_number=${episode}`;
+        }
+
+        const res = await axios.get(url, {
+            headers: {
+                "Api-Key": OPENSUBTITLES_API_KEY,
+                "User-Agent": "StremioCloudSubsync v1.1.0"
+            },
+            timeout: 5000
+        });
+
+        if (res.data && res.data.data && res.data.data.length > 0) {
+            const fileId = res.data.data[0].attributes.files[0].file_id;
+
+            // Request download link
+            const dlRes = await axios.post("https://api.opensubtitles.com/api/v1/download", 
+                { file_id: fileId }, 
+                {
+                    headers: {
+                        "Api-Key": OPENSUBTITLES_API_KEY,
+                        "Content-Type": "application/json",
+                        "User-Agent": "StremioCloudSubsync v1.1.0"
+                    },
+                    timeout: 5000
+                }
+            );
+
+            if (dlRes.data && dlRes.data.link) {
+                const srtContentRes = await axios.get(dlRes.data.link, { timeout: 5000 });
+                return srtContentRes.data;
+            }
+        }
+    } catch (err) {
+        console.error("[OpenSubtitles Fetch Error]:", err.message);
+    }
+    return null;
+}
+
 builder.defineSubtitlesHandler(async ({ type, id }) => {
-    console.log(`[Subtitles Request] ${id}`);
+    console.log(`[Subtitles Request] Type: ${type}, ID: ${id}`);
     const [imdbId, season, episode] = id.split(":");
 
     try {
-        // Fetch matching subtitle track
-        const sampleSrt = `1\n00:00:12,000 --> 00:00:16,000\nSample subtitle line for testing.`;
+        const rawSrt = await fetchOpenSubtitles(imdbId, season, episode);
 
-        // If a video stream URL is passed or matched, process alignment
-        const correctedVtt = srtToVtt(sampleSrt);
+        if (!rawSrt) {
+            console.log(`[Subtitles] No subtitle file found for ${imdbId}`);
+            return { subtitles: [] };
+        }
+
+        const correctedVtt = srtToVtt(rawSrt);
         const base64Vtt = Buffer.from(correctedVtt).toString("base64");
 
         return {
             subtitles: [
                 {
-                    id: `autosync_${imdbId}`,
+                    id: `autosync_${imdbId}_${season || 0}_${episode || 0}`,
                     url: `data:text/vtt;charset=utf-8;base64,${base64Vtt}`,
                     lang: "Auto-Corrected 🎙️"
                 }
