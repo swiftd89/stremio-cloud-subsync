@@ -11,7 +11,7 @@ const OPENSUBTITLES_API_KEY = process.env.OPENSUB_API_KEY || "";
 
 const manifest = {
     id: "org.myself.cloudautosubsync",
-    version: "1.2.0",
+    version: "1.3.0",
     name: "Auto-Corrected Subtitles 🎙️",
     description: "Cloud-based voice activity alignment for perfectly synced subtitles on LG TV.",
     resources: ["subtitles"],
@@ -30,19 +30,24 @@ function srtToVtt(srtText) {
     return vtt;
 }
 
-// Primary: OpenSubtitles v3
+// OpenSubtitles v3 Fetcher
 async function fetchFromOpenSubtitles(cleanImdb, season, episode) {
     if (!OPENSUBTITLES_API_KEY) return null;
     try {
-        let url = `https://api.opensubtitles.com/api/v1/subtitles?imdb_id=${cleanImdb}&languages=en`;
-        if (season && episode) url += `&season_number=${season}&episode_number=${episode}`;
+        let url = "https://api.opensubtitles.com/api/v1/subtitles?languages=en";
+        
+        if (season && episode) {
+            url += `&parent_imdb_id=${cleanImdb}&season_number=${season}&episode_number=${episode}`;
+        } else {
+            url += `&imdb_id=${cleanImdb}`;
+        }
 
         const res = await axios.get(url, {
             headers: {
                 "Api-Key": OPENSUBTITLES_API_KEY,
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             },
-            timeout: 4000
+            timeout: 5000
         });
 
         if (res.data?.data?.[0]?.attributes?.files?.[0]?.file_id) {
@@ -55,33 +60,29 @@ async function fetchFromOpenSubtitles(cleanImdb, season, episode) {
                         "Content-Type": "application/json",
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
                     },
-                    timeout: 4000
+                    timeout: 5000
                 }
             );
 
             if (dlRes.data?.link) {
-                const srtContent = await axios.get(dlRes.data.link, { timeout: 4000 });
+                const srtContent = await axios.get(dlRes.data.link, { timeout: 5000 });
                 return srtContent.data;
             }
         }
     } catch (err) {
-        console.error(`[OpenSubtitles 503/Error]: ${err.message}`);
+        console.error(`[OpenSubtitles Error]: ${err.message}`);
     }
     return null;
 }
 
-// Fallback: OpenSubtitles Rest Mirror (No API key / Cloud-friendly)
+// Fallback Subtitle Mirror
 async function fetchFromSubMirror(cleanImdb, season, episode) {
     try {
-        let query = `tt${cleanImdb}`;
-        if (season && episode) query += `:${season}:${episode}`;
-        
-        // Fetch from public subtitle proxy mirror
         const url = `https://subtitles.strem.io/subtitles/series/tt${cleanImdb}:${season}:${episode}/en.json`;
-        const res = await axios.get(url, { timeout: 4000 });
+        const res = await axios.get(url, { timeout: 5000 });
         
         if (res.data?.[0]?.url) {
-            const srtRes = await axios.get(res.data[0].url, { timeout: 4000 });
+            const srtRes = await axios.get(res.data[0].url, { timeout: 5000 });
             return srtRes.data;
         }
     } catch (err) {
@@ -96,16 +97,15 @@ builder.defineSubtitlesHandler(async ({ type, id }) => {
     const cleanImdb = imdbId.replace("tt", "");
 
     try {
-        // Try OpenSubtitles v3 first, then fallback mirror
         let rawSrt = await fetchFromOpenSubtitles(cleanImdb, season, episode);
         
         if (!rawSrt) {
-            console.log("[Subtitles] OpenSubtitles 503 hit, attempting fallback mirror...");
+            console.log("[Subtitles] Primary search yielded no result, checking fallback mirror...");
             rawSrt = await fetchFromSubMirror(cleanImdb, season, episode);
         }
 
         if (!rawSrt) {
-            console.log(`[Subtitles] No subtitle file found for tt${cleanImdb}`);
+            console.log(`[Subtitles] No subtitle file found for tt${cleanImdb} S${season}E${episode}`);
             return { subtitles: [] };
         }
 
