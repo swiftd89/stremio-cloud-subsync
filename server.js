@@ -14,6 +14,7 @@ const manifest = {
     description: "Cloud-based voice activity alignment for perfectly synced subtitles on LG TV.",
     resources: ["subtitles"],
     types: ["movie", "series"],
+    catalogs: [], // Required by Stremio SDK linter
     idPrefixes: ["tt"]
 };
 
