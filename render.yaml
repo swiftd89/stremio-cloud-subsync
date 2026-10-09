@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: stremio-cloud-subsync
+    env: docker
+    plan: free
+    region: oregon
+    envVars:
+      - key: PORT
+        value: 7000
